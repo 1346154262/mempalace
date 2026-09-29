@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+---
+
+## [3.11.0] — 2026-09-29
+
+A palace can now be audited and repaired in guided steps: scored for organization, given closed room sets, split into per-project wings, and cleaned of noisy tunnels and one-off predicates. Conversation mining stops discarding text, and status, search, wake-up and hub mines stay responsive on large palaces.
+
+### Upgrade notes
+
+- **`EntityRegistry.research()` and `confirm_research()` are removed.** They were
+  a Wikipedia lookup for unknown words, and the only call the package could make
+  to a third-party service without the user configuring an endpoint. (The hub
+  client, `llm_client`, `closet_llm`, the openai-compat embedder and the Qdrant
+  backend also reach the network, but only to an address the user sets.) Nothing in the CLI, MCP server, miners or hooks called them, and the
+  lookup was already opt-in and off by default, so no shipped code path reached
+  the network. They are gone rather than merely gated, so local-first is a
+  property of the code and not of a default argument. Existing `wiki_cache`
+  entries in `entities.json` are still read by `lookup()`; nothing new is written
+  to that cache. (GHSA-mrj5)
+
 ### Added
 
 - **`hallways --rebuild` holds the palace writer lock,** so a mine cannot save
@@ -231,7 +250,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   merges the JSON in one statement per row and leaves the FTS row alone
   (110k rows/s measured).
 
+### Security
+
+- **ChromaDB telemetry is disabled explicitly, not just silenced.** MemPalace only
+  raised the log level on `chromadb.telemetry.product.posthog`, leaving ChromaDB's
+  own `anonymized_telemetry=True` default in place. Nothing is transmitted on the
+  1.x line we support, where the posthog client is a no-op stub and posthog is not
+  a dependency, so this was never exploitable — but the default was ChromaDB's to
+  change. Every client the backend opens now passes
+  `Settings(anonymized_telemetry=False)`, and importing `mempalace` sets
+  `ANONYMIZED_TELEMETRY=False` (via `setdefault`, so an explicit operator export
+  still wins) for any other chromadb client in the process. (GHSA-8h77)
+
 ### Bug Fixes
+- **Mempalace's own SQLite reads no longer break Chroma's locks in the same
+  process.** Status, taxonomy, `list_drawers`, BM25, the integrity check, and
+  repair open `chroma.sqlite3` through Python's `sqlite3`, while Chroma opens it
+  through its bundled SQLite. Closing a Python connection dropped every lock the
+  process held on the file, Chroma's included, and a check racing a Chroma
+  commit could read torn pages ("database disk image is malformed"). All Python
+  access now goes through one reader/writer wrapper that holds a per-file
+  process lock and keeps Chroma's locks in place. (#2302, #2506)
+- **A one-file mine no longer scans the whole palace to find out whether that
+  file is already mined.** Every hook-triggered mine checked the full
+  collection. On a 660k-drawer palace that was 79% of a 23-minute mine. With 50
+  or fewer candidate files the check now asks only for those files' rows.
+  (#2561, #2567)
+
 - **Conversation mining no longer discards text.** In exchange mode (the default
   for `mempalace mine --mode convos`) a line starting with `---` ended the AI
   response, and everything from it to the next user turn was never filed.
@@ -258,6 +303,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   file at. A write from another process still rebuilds the client (#2002). On
   a 100k-drawer palace a tool call's collection open went from 70-130 ms and
   +15 MB of RSS to 0.3 ms.
+
 - **`mempalace_status`, `list_wings`, taxonomy, and `graph_stats` no longer
   recount the whole palace on every call.** The 5 s count cache was stamped
   before its query ran, so any count slower than 5 s, as on a
@@ -265,11 +311,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   no cache at all. The Chroma caches now stay valid until `chroma.sqlite3`
   changes, and the TTL runs from when the count finished. Repeated status
   calls on a 360k-drawer palace went from 8-12 s each to about 1 ms.
+
 - **Opening a palace with no recorded embedder no longer loads every vector.**
   To tell an empty collection from a populated one, the identity check called
   `count()`, which on a fresh Chroma client loads the whole HNSW segment while
   holding the GIL and stalls every thread in the process. It ran on every
   CLI search the hub forwarded. It now reads one row from `chroma.sqlite3`.
+
 - **Mining no longer rescans the whole palace with quadratic paging.** Every
   conversation mine, a hook's one-file mine included, scanned every drawer for
   content hashes, and bulk mines scanned them again for mined files, both by
@@ -280,18 +328,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   read from `chroma.sqlite3` in one pass, and the content-hash scan reads only
   drawers that carry a hash: under 10 ms and 1.6 s on that palace.
   `get_all_metadata`, behind the status and graph fallbacks, uses the same pass.
+
 - **A reset of Chroma's shared cache now reopens every client.** Only the MCP
   session closed its client before the shared System cache was reset. After a
   reset by the session, repair, or the diary tool, every backend kept its client
   on the discarded System, and kept returning it while the palace file looked
   unchanged. Backends are now drained before any reset, and reopen a client
   opened before one.
+
 - **A mine stops instead of running against a partial list of what's already
   mined.** A metadata scan that failed partway returned what it had gathered,
   with only a warning. That reads as "not mined yet" and "no duplicate", so
   copies of a transcript could be filed again. A failed fast scan now falls back
   to a complete paged scan, and the mine stops if that fails too. The fast scan
   also reads older schemas without `bool_value`.
+
 - **The BM25-only search fallback finds the drawers that actually contain a
   name.** With the vector index disabled, search picks BM25 candidates from
   `chroma.sqlite3`'s trigram full-text index, where `aven` also matches inside
@@ -305,6 +356,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   whole-word ones, the rest are read newest first, within a budget of 500,000
   rows. If that budget runs out, the result says so with
   `candidates_truncated`.
+
 - **Search no longer returns every copy of a passage as a separate result.**
   Backups, autosaves, and re-exports put the same text under several files, and
   each copy took a result slot. Identical text of at least 100 characters now
@@ -314,11 +366,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   does a file's own repeats. When the folding leaves a page short, the search
   widens its candidate pool (up to 500). If it's still short, it says so with
   `distinct_results_truncated`.
+
 - **A mine on the HTTP hub no longer blocks every other request until it
   ends.** The hub ran a forwarded mine under its exclusive lock for the whole
   run, so status, search, and wake-up waited for all of it. The mine still runs
   exclusively, but between files it hands the lock to the requests queued
   behind it, then takes it back; a second mine still waits for the first.
+
 - **`mempalace wake-up` reads its recent drawers from `chroma.sqlite3`.**
   Chroma's `get` loads the whole index even for a metadata read, so waking up
   a ten-drawer wing loaded every vector in the palace, and the window was the
@@ -327,12 +381,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   0.5 s at 238 MB. The read stays on the metadata segment, so a vector-segment
   row cannot come back as an empty drawer. Chroma advertises
   `supports_recency_order` for that exact window.
+
 - **A write from another process reconnects every Chroma client in this one.**
   Search and the other tools share one in-memory index. The client that
   noticed the write rebuilt and recorded the new file stat; the other treated
   that stat as its own write and kept reading the index the rebuild had
   discarded. Both clients now drop together. `mempalace_status` also recounts
   as soon as the palace file changes, including inside its 5 second cache.
+
 - **The legacy `mempalace repair` no longer runs without the palace lease, so a
   hook miner can no longer destroy a repair that is already half done.**
   `cmd_repair` extracted every drawer and copied the whole palace to
@@ -352,6 +408,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`mempalace-mcp` with no hub running) now answers it with `-32700`, as the hub's
   HTTP transport does, and `mempalace-light-mcp` skips it, as it skips invalid
   JSON. (#2556)
+
 - **Hallways no longer pair an entity with its own spelling.** The structural
   extractor records a file as both its path and its basename, so conversation
   mining wrote `main.zig ↔ src/main.zig` as the strongest hallway in every code
@@ -364,6 +421,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   merges the variants, keeping the highest-count record. Found by
   `mempalace audit` on the maintainers' own palace: 2,437 self-links and the
   top-100 hallways 36% self-linked.
+
 - **A `known_entities.json` write no longer appears to hang on Windows when the
   directory refuses a temporary file.** `_publish_registry` falls back to writing
   in place when the directory takes no new name, and it learned that from the
@@ -375,6 +433,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   write looked frozen. The temporary name is now opened directly with
   `O_CREAT | O_EXCL`, retried only on a real collision and only a few times, so
   the permission error reaches the fallback on every interpreter. (#2530)
+
 - **Importing `mempalace.mcp_server` no longer parses the importing program's
   command line.** `mempalace-light-mcp --help` printed the full server's options,
   and a host program exited 2 on its own `--port abc`. The entry points apply
@@ -383,6 +442,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `mempalace daemon start --foreground` and no `--palace` now writes `mcp_tool`
   knowledge-graph facts beside its palace, not to
   `~/.mempalace/knowledge_graph.sqlite3`. (#2528)
+
 - **`mempalace-mcp` now answers the requests it could not serve.** When its hub
   was gone and its own server could not start, every request was dropped and the
   client waited on each one. That happens with a `--backend` that names no
@@ -394,34 +454,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   included, is then not replayed, and a read is served locally. `--palace` or
   `--backend` with no value is refused at startup. (#2554)
 
-### Upgrade notes
-
-- **`EntityRegistry.research()` and `confirm_research()` are removed.** They were
-  a Wikipedia lookup for unknown words, and the only call the package could make
-  to a third-party service without the user configuring an endpoint. (The hub
-  client, `llm_client`, `closet_llm`, the openai-compat embedder and the Qdrant
-  backend also reach the network, but only to an address the user sets.) Nothing in the CLI, MCP server, miners or hooks called them, and the
-  lookup was already opt-in and off by default, so no shipped code path reached
-  the network. They are gone rather than merely gated, so local-first is a
-  property of the code and not of a default argument. Existing `wiki_cache`
-  entries in `entities.json` are still read by `lookup()`; nothing new is written
-  to that cache. (GHSA-mrj5)
-
-### Security
-
-- **ChromaDB telemetry is disabled explicitly, not just silenced.** MemPalace only
-  raised the log level on `chromadb.telemetry.product.posthog`, leaving ChromaDB's
-  own `anonymized_telemetry=True` default in place. Nothing is transmitted on the
-  1.x line we support, where the posthog client is a no-op stub and posthog is not
-  a dependency, so this was never exploitable — but the default was ChromaDB's to
-  change. Every client the backend opens now passes
-  `Settings(anonymized_telemetry=False)`, and importing `mempalace` sets
-  `ANONYMIZED_TELEMETRY=False` (via `setdefault`, so an explicit operator export
-  still wins) for any other chromadb client in the process. (GHSA-8h77)
-
-### Bug Fixes
-
 - **`sync --apply` no longer removes a drawer whose corroborating neighbour is in a different directory than the one its source was mined from.** #2322 made removal ask for a witness in the same directory, which three mount shapes defeat: a mount point whose lower layer holds a mined file of its own, a volume mounted over a directory the palace already knows a file in, and a bind mount of another directory over one it knows, which is what a container does with `-v /host/elsewhere:/project/sub`. Driven through real `mount` and `umount`, all three removed drawers of files that were on disk the whole time. Mining now records which directory each source was read from, as that directory's inode, and `sync` compares it against the inode answering when the verdict is formed. Nothing is written into the source tree for it, so the read-only mounts the README's container recipes use keep working; `st_dev` could not do it, since a bind mount puts both sides on one filesystem where it is the same number. Ten paths record the identity, and `update_drawer` carries it forward when it refiles a drawer as chunks, so every row `sync` can remove holds one. Four bounds: one volume swapped for another at the same path is not separated, a directory deleted and recreated may answer with a different inode and then keeps the drawers of files that really went, a filesystem reporting no inode of its own gains nothing and reproduces the bug in full, and the `gitignored` removal route is unchanged. An existing palace gains the field only as it is re-mined, which `file_already_mined` decides from the stored mtime. Closets are now purged per source a pass emptied rather than per source it removed a drawer from, so a source that kept one keeps the lines that index it. (#2367)
+
 - **`sync --apply` no longer removes a drawer because a volume mounted over its
   directory carries a file of the same name and a `.gitignore` that names it.**
   The `gitignored` verdict was formed from one reading of the path, with nothing
@@ -1291,7 +1325,8 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/MemPalace/mempalace/compare/v3.10.0...HEAD
+[Unreleased]: https://github.com/MemPalace/mempalace/compare/v3.11.0...HEAD
+[3.11.0]: https://github.com/MemPalace/mempalace/compare/v3.10.0...v3.11.0
 [3.10.0]: https://github.com/MemPalace/mempalace/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/MemPalace/mempalace/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/MemPalace/mempalace/compare/v3.7.1...v3.8.0
