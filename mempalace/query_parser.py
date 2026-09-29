@@ -1486,8 +1486,9 @@ def parse_coordinate_input(input_data: Any, _internal: bool = False) -> Tuple[st
         if "preview" in kv:
             kv["preview"] = bool(kv["preview"])
 
-        if "from" in kv and "from_agent" not in kv:
-            kv["from_agent"] = kv.pop("from")
+        # 'from:' in a list query is an explicit filter by writer (from_agent is the caller's identity).
+        if "from" in kv and "writer" not in kv:
+            kv["writer"] = kv.pop("from")
         elif "from" in kv:
             kv.pop("from")
         if "to" in kv and "to_agent" not in kv:
@@ -1544,8 +1545,9 @@ def parse_coordinate_input(input_data: Any, _internal: bool = False) -> Tuple[st
     # --- Event Wait ---
     if first_tok == "EVENT" and len(tokens) > 1 and tokens[1].upper() == "WAIT":
         kv = _parse_key_value_tokens(tokens[2:])
-        if "from" in kv and "from_agent" not in kv:
-            kv["from_agent"] = kv.pop("from")
+        # 'from:' in a wait query is an explicit filter by writer (from_agent is the caller's identity).
+        if "from" in kv and "writer" not in kv:
+            kv["writer"] = kv.pop("from")
         elif "from" in kv:
             kv.pop("from")
         if "to" in kv and "to_agent" not in kv:

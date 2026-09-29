@@ -392,6 +392,14 @@ class TestPalaceCoordinateParser:
         assert params["correlation_id"] == "task_1"
         assert params["timeout_ms"] == 5000
 
+        # 'from:' in a list/wait query filters by writer; from_agent stays the caller's identity.
+        target, params = parse_coordinate_input("EVENT LIST correlation:task_1 from:agent2")
+        assert target == "event_list"
+        assert params["writer"] == "agent2" and "from_agent" not in params
+        target, params = parse_coordinate_input("EVENT WAIT correlation:task_1 from:agent2")
+        assert target == "event_wait"
+        assert params["writer"] == "agent2" and "from_agent" not in params
+
         target, params = parse_coordinate_input(
             'EVENT ACK id:evt_123 from:agent1 status:applied body:"Done"'
         )
