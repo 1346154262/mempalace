@@ -183,8 +183,11 @@ echo "[$(date '+%H:%M:%S')] PRE-COMPACT triggered for session $SESSION_ID" >> "$
 #   2. MEMPAL_DIR → --mode projects
 # When a daemon is up, route via --daemon (MemPalace/mempalace#2326).
 MEMPAL_MINE_ROUTE=""
-if "$MEMPAL_PYTHON_BIN" -m mempalace daemon status >/dev/null 2>&1; then
-    MEMPAL_MINE_ROUTE="--daemon"
+if { is_valid_transcript_path "$TRANSCRIPT_PATH" && [ -f "$TRANSCRIPT_PATH" ]; } \
+    || { [ -n "$MEMPAL_DIR" ] && [ -d "$MEMPAL_DIR" ]; }; then
+    if "$MEMPAL_PYTHON_BIN" -m mempalace.hook_shell daemon-available >/dev/null 2>&1; then
+        MEMPAL_MINE_ROUTE="--daemon"
+    fi
 fi
 if is_valid_transcript_path "$TRANSCRIPT_PATH" && [ -f "$TRANSCRIPT_PATH" ]; then
     "$MEMPAL_PYTHON_BIN" -m mempalace mine "$(dirname "$TRANSCRIPT_PATH")" --mode convos \

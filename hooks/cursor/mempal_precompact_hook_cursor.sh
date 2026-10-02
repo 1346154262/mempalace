@@ -95,9 +95,11 @@ mempal_log "preCompact" "$MEMPAL_CONV_ID" \
 if command -v mempalace >/dev/null 2>&1; then
     # Route via --daemon when one is up (MemPalace/mempalace#2326).
     MEMPAL_MINE_ROUTE=""
-    if "$MEMPAL_PYTHON_BIN" -m mempalace daemon status >/dev/null 2>&1 \
-        || mempalace daemon status >/dev/null 2>&1; then
-        MEMPAL_MINE_ROUTE="--daemon"
+    if { mempal_is_valid_transcript "$MEMPAL_TRANSCRIPT" && [ -f "$MEMPAL_TRANSCRIPT" ]; } \
+        || { [ -n "$MEMPAL_DIR" ] && [ -d "$MEMPAL_DIR" ]; }; then
+        if mempalace hook daemon-available >/dev/null 2>&1; then
+            MEMPAL_MINE_ROUTE="--daemon"
+        fi
     fi
     if mempal_is_valid_transcript "$MEMPAL_TRANSCRIPT" \
         && [ -f "$MEMPAL_TRANSCRIPT" ]; then

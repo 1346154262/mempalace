@@ -228,7 +228,7 @@ mempal_log "stop" "$CONVERSATION_ID" "spawning background mine wing=$WING transc
     if "$MEMPAL_PYTHON_BIN" -m mempalace --version >/dev/null 2>&1; then
         # Route via --daemon when one is up (MemPalace/mempalace#2326).
         MEMPAL_MINE_ROUTE=""
-        if "$MEMPAL_PYTHON_BIN" -m mempalace daemon status >/dev/null 2>&1; then
+        if "$MEMPAL_PYTHON_BIN" -m mempalace.hook_shell daemon-available >/dev/null 2>&1; then
             MEMPAL_MINE_ROUTE="--daemon"
         fi
         "$MEMPAL_PYTHON_BIN" -m mempalace mine "$TRANSCRIPT_DIR" \
