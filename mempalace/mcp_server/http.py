@@ -124,6 +124,21 @@ _HTTP_MINE_LOCK = threading.Lock()
 # Tools that hold the request lock exclusively for a long run but reach
 # mine_yield_point() between files, where waiting requests may run.
 _HTTP_YIELDING_TOOLS = frozenset({"mempalace_mine"})
+# Tools whose handler makes one request-local embedding call before an
+# otherwise independent backend operation. Holding ``_HTTP_REQUEST_LOCK``
+# through that inference stalls unrelated requests for the whole model call
+# (#2604). Compound read-modify-write tools stay fully serialized.
+_HTTP_EMBEDDING_RELEASE_TOOLS = frozenset(
+    {
+        "mempalace_search",
+        "mempalace_check_duplicate",
+        "mempalace_diary_write",
+    }
+)
+# Taken while a request has released the request lock mid-embedding so
+# ``mempalace_reconnect`` cannot close backend handles during that window.
+_HTTP_EMBEDDING_LIFECYCLE_LOCK = threading.Lock()
+_http_embedding_release_tls = threading.local()
 _HTTP_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _HTTP_ACTIVE_CLIENT_WINDOW_S = 120.0
 
@@ -412,6 +427,48 @@ def _sse_max_clients() -> int:
         return _SSE_MAX_CLIENTS_DEFAULT
 
 
+@contextlib.contextmanager
+def _http_release_request_lock_for_embedding(mode: str):
+    """Release the held request lock only around embedding inference.
+
+    ``mode`` is ``"read"`` or ``"write"`` and must match how ``_http_dispatch``
+    acquired ``_HTTP_REQUEST_LOCK`` for this request. Nested embedding calls
+    on the same thread do not double-release.
+    """
+    depth = getattr(_http_embedding_release_tls, "depth", 0)
+    _http_embedding_release_tls.depth = depth + 1
+    try:
+        if depth > 0:
+            yield
+            return
+        if mode == "read":
+            _HTTP_REQUEST_LOCK.release_read()
+        else:
+            _HTTP_REQUEST_LOCK.release_write()
+        try:
+            with _HTTP_EMBEDDING_LIFECYCLE_LOCK:
+                yield
+        finally:
+            if mode == "read":
+                _HTTP_REQUEST_LOCK.acquire_read()
+            else:
+                _HTTP_REQUEST_LOCK.acquire_write()
+    finally:
+        _http_embedding_release_tls.depth = depth
+
+
+@contextlib.contextmanager
+def _http_embedding_release_installed(mode: str):
+    """Install this thread's embedding-section hook for one dispatch."""
+    from ..embedding import set_embedding_section_hook
+
+    set_embedding_section_hook(lambda: _http_release_request_lock_for_embedding(mode))
+    try:
+        yield
+    finally:
+        set_embedding_section_hook(None)
+
+
 def _http_dispatch(request):
     """Dispatch one JSON-RPC request with the transport's locking policy.
 
@@ -435,6 +492,9 @@ def _http_dispatch(request):
     from ..service import classify_tool
 
     if classify_tool(tool_name) == "read":
+        if tool_name in _HTTP_EMBEDDING_RELEASE_TOOLS:
+            with _http_embedding_release_installed("read"), _HTTP_REQUEST_LOCK.read_lock():
+                return handle_request(request)
         with _HTTP_REQUEST_LOCK.read_lock():
             return handle_request(request)
     if tool_name in _HTTP_YIELDING_TOOLS:
@@ -448,6 +508,9 @@ def _http_dispatch(request):
             _HTTP_REQUEST_LOCK,
             mine_yield_hook(_HTTP_REQUEST_LOCK.yield_write),
         ):
+            return handle_request(request)
+    if tool_name in _HTTP_EMBEDDING_RELEASE_TOOLS:
+        with _http_embedding_release_installed("write"), _HTTP_REQUEST_LOCK:
             return handle_request(request)
     with _HTTP_REQUEST_LOCK:
         return handle_request(request)

@@ -352,6 +352,17 @@ def tool_reconnect():
     or replace ``knowledge_graph.sqlite3`` directly, which can leave the
     in-memory HNSW index stale or pin a closed-on-disk SQLite connection.
     """
+    # Serialize against HTTP embedding windows that temporarily drop
+    # ``_HTTP_REQUEST_LOCK`` (#2604).
+    _HTTP_EMBEDDING_LIFECYCLE_LOCK.acquire()
+    try:
+        return _tool_reconnect_locked()
+    finally:
+        _HTTP_EMBEDDING_LIFECYCLE_LOCK.release()
+
+
+def _tool_reconnect_locked():
+    """Reconnect body; caller holds ``_HTTP_EMBEDDING_LIFECYCLE_LOCK``."""
     global \
         _client_cache, \
         _collection_cache, \

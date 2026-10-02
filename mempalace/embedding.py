@@ -51,6 +51,7 @@ rejected by a witness embedding at load time.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -60,6 +61,55 @@ from typing import Optional
 from .version import __version__
 
 logger = logging.getLogger(__name__)
+
+# Optional per-thread hook around embedding inference. The HTTP transport
+# installs a context manager that releases ``_HTTP_REQUEST_LOCK`` only for the
+# model call so embedding latency does not stall unrelated requests (#2604).
+# CLI and stdio leave this unset.
+_embedding_section_hook_local = threading.local()
+
+
+def set_embedding_section_hook(hook) -> None:
+    """Install or clear this thread's embedding-section context manager factory.
+
+    ``hook`` is ``None`` or a zero-arg callable that returns a context manager.
+    """
+    _embedding_section_hook_local.hook = hook
+
+
+@contextlib.contextmanager
+def embedding_section():
+    """Run the body under this thread's embedding-section hook, if any."""
+    hook = getattr(_embedding_section_hook_local, "hook", None)
+    if hook is None:
+        yield
+        return
+    with hook():
+        yield
+
+
+class _EmbeddingSectionFunction:
+    """Wrap a ChromaDB embedding function so inference goes through :func:`embedding_section`."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __call__(self, input=None, **kwargs):  # noqa: A002 — ChromaDB EF protocol
+        with embedding_section():
+            if kwargs:
+                if input is not None:
+                    kwargs = dict(kwargs)
+                    kwargs["input"] = input
+                return self._inner(**kwargs)
+            return self._inner(input=input)
+
+    def embed_query(self, input):  # noqa: A002
+        with embedding_section():
+            return self._inner.embed_query(input)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
 
 _PROVIDER_MAP = {
     "cpu": ["CPUExecutionProvider"],
@@ -781,7 +831,9 @@ def get_embedding_function(device: Optional[str] = None, model: Optional[str] = 
         cached = _EF_CACHE.get(cache_key)
         if cached is not None:
             return cached
-        ef = OpenAICompatEmbeddingFunction(base_url=url, model=api_model, api_key=api_key)
+        ef = _EmbeddingSectionFunction(
+            OpenAICompatEmbeddingFunction(base_url=url, model=api_model, api_key=api_key)
+        )
         _EF_CACHE[cache_key] = ef
         logger.info(
             "Embedding function initialized (openai-compat url=%s model=%s)", url, api_model
@@ -810,6 +862,7 @@ def get_embedding_function(device: Optional[str] = None, model: Optional[str] = 
             ef_cls = _build_ef_class()
             ef = ef_cls(preferred_providers=providers, intra_op_num_threads=threads)
 
+        ef = _EmbeddingSectionFunction(ef)
         _EF_CACHE[cache_key] = ef
     logger.info(
         "Embedding function initialized (model=%s device=%s providers=%s)",

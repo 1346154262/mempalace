@@ -17,13 +17,21 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     convert to real Python floats. ``.tolist()`` does that in C; the
     ``float(x)`` branch covers embedders that already hand back plain
     sequences.
+
+    Runs under :func:`mempalace.embedding.embedding_section` so the HTTP
+    transport can release ``_HTTP_REQUEST_LOCK`` only around inference (#2604).
     """
     if not texts:
         return []
-    from ..embedding import get_embedding_function
+    from ..embedding import embedding_section, get_embedding_function
 
-    ef = get_embedding_function()
-    vectors = ef(input=texts)
+    with embedding_section():
+        ef = get_embedding_function()
+        # get_embedding_function already wraps EF in embedding_section; calling
+        # through it again is a no-op nest when the HTTP hook is installed
+        # (depth-tracked there). Keep the outer section so a bare EF still
+        # releases when tests patch get_embedding_function.
+        vectors = ef(input=texts)
     return [
         v.tolist() if hasattr(v, "tolist") else [float(x) for x in v]  # numpy | plain sequence
         for v in vectors
