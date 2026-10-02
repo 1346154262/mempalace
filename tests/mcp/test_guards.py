@@ -258,6 +258,77 @@ def test_peer_writer_guard_does_not_gate_kg_tools(monkeypatch):
         assert mcp_server._mcp_read_only_refusal(1, name) is not None
 
 
+def test_kg_add_does_not_leave_palace_mine_lock_held(monkeypatch, config, kg):
+    """A successful kg_add must not pin mine_palace_*.lock for the process.
+
+    On 3.10.0 the peer-writer lease wrapped KG writes; the flock stayed open
+    until the MCP process died, blocking every ``mempalace mine`` (#2618).
+    KG tools are exempt now; this locks that contract to the lock file itself.
+    """
+    from mempalace import mcp_server
+    from mempalace.palace import MineAlreadyRunning, mine_palace_lock
+
+    monkeypatch.setattr(mcp_server, "_config", config)
+    monkeypatch.setattr(mcp_server, "_get_kg", lambda *_a, **_k: kg)
+    # Start from a clean lease so a prior test cannot mask a leak.
+    mcp_server._release_mcp_writer_lock()
+    assert mcp_server._MCP_WRITER_LOCK_CM is None
+
+    response = mcp_server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "mempalace_kg_add",
+                "arguments": {
+                    "subject": "alice",
+                    "predicate": "likes",
+                    "object": "bob",
+                },
+            },
+        }
+    )
+    assert "error" not in response, response
+    body = json.loads(response["result"]["content"][0]["text"])
+    assert body.get("success") is True, body
+    assert mcp_server._MCP_WRITER_LOCK_CM is None
+
+    # Contending mine must be able to take the palace lock immediately.
+    try:
+        with mine_palace_lock(config.palace_path):
+            held = True
+    except MineAlreadyRunning as exc:
+        raise AssertionError(f"kg_add left the palace mine lock held: {exc}") from exc
+    assert held
+
+
+def test_writer_lock_setup_failure_releases_flock(monkeypatch, config):
+    """If promotion fails after __enter__, the flock must not stay pinned."""
+    from mempalace import mcp_server
+    from mempalace.palace import MineAlreadyRunning, mine_palace_lock
+
+    monkeypatch.setattr(mcp_server, "_config", config)
+    mcp_server._release_mcp_writer_lock()
+
+    def boom():
+        raise RuntimeError("simulated discard failure")
+
+    monkeypatch.setattr(mcp_server, "_discard_mcp_storage_handles", boom)
+
+    ok, reason = mcp_server._acquire_mcp_writer_lock()
+    assert ok is False
+    assert "simulated discard failure" in reason
+    assert mcp_server._MCP_WRITER_LOCK_CM is None
+
+    try:
+        with mine_palace_lock(config.palace_path):
+            released = True
+    except MineAlreadyRunning as exc:
+        raise AssertionError(f"aborted acquire left the flock held: {exc}") from exc
+    assert released
+
+
 def test_status_tool_does_not_acquire_peer_writer_lock(monkeypatch):
     from mempalace import mcp_server
 
