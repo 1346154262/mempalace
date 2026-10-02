@@ -264,8 +264,15 @@ if [ "$SINCE_LAST" -ge "$SAVE_INTERVAL" ] && [ "$EXCHANGE_COUNT" -gt 0 ]; then
     #      (code, notes, docs)
     # MEMPAL_DIR is *additive*, not an override: a user with MEMPAL_DIR
     # pointed at their project still gets the active conversation mined.
+    # When a daemon is up, route via --daemon so hooks honour write_routing
+    # (see MemPalace/mempalace#2326). No daemon → leave direct (unaffected).
+    MEMPAL_MINE_ROUTE=""
+    if "$MEMPAL_PYTHON_BIN" -m mempalace daemon status >/dev/null 2>&1; then
+        MEMPAL_MINE_ROUTE="--daemon"
+    fi
     if is_valid_transcript_path "$TRANSCRIPT_PATH" && [ -f "$TRANSCRIPT_PATH" ]; then
         "$MEMPAL_PYTHON_BIN" -m mempalace mine "$(dirname "$TRANSCRIPT_PATH")" --mode convos \
+            $MEMPAL_MINE_ROUTE \
             >> "$STATE_DIR/hook.log" 2>&1 &
     elif [ -n "$TRANSCRIPT_PATH" ]; then
         echo "[$(date '+%H:%M:%S')] Skipping invalid transcript path: $TRANSCRIPT_PATH" \
@@ -273,6 +280,7 @@ if [ "$SINCE_LAST" -ge "$SAVE_INTERVAL" ] && [ "$EXCHANGE_COUNT" -gt 0 ]; then
     fi
     if [ -n "$MEMPAL_DIR" ] && [ -d "$MEMPAL_DIR" ]; then
         "$MEMPAL_PYTHON_BIN" -m mempalace mine "$MEMPAL_DIR" --mode projects \
+            $MEMPAL_MINE_ROUTE \
             >> "$STATE_DIR/hook.log" 2>&1 &
     fi
 
