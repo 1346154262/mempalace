@@ -230,10 +230,18 @@ class TestDispatch:
     def test_list_writer_filters_by_who_wrote_the_event(self, patched_server):
         _result(_call(patched_server, "mempalace_event_append", APPEND_ARGS))
         mine = _result(
-            _call(patched_server, "mempalace_event_list", {"correlation_id": "task_mcp", "writer": "mac-codex"})
+            _call(
+                patched_server,
+                "mempalace_event_list",
+                {"correlation_id": "task_mcp", "writer": "mac-codex"},
+            )
         )
         other = _result(
-            _call(patched_server, "mempalace_event_list", {"correlation_id": "task_mcp", "writer": "windows-codex"})
+            _call(
+                patched_server,
+                "mempalace_event_list",
+                {"correlation_id": "task_mcp", "writer": "windows-codex"},
+            )
         )
         assert mine["count"] == 1 and other["count"] == 0
         assert "note" not in mine
